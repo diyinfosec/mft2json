@@ -14,7 +14,7 @@ List the NTFS drives
 try:
 	
 
-	source_drive=r"\\.\e:"
+	source_drive="e"
 	target_path=r"d:\\"
 
 	filename_counter=0
@@ -28,7 +28,7 @@ try:
 						print("This program will take a snapshot of the $MFT in %s and write the output file to %s"%(source_drive,target_path))
 						print("You an keep taking snapshots and press ctrl+c to quit the program")
 			
-			input('\n\nPress enter to take a snapshot. Ctrl+c to Quit. ');
+			input('\n\nPress enter to take a snapshot. Ctrl+c to Quit. ')
 			start_time=timer()
 			m.take_mft_snapshot(source_drive,target_path)
 			end_time = timer()

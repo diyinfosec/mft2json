@@ -570,8 +570,8 @@ class ParseMFT:
 		#print(len(data_run_list))
 
 
-	#- TODO: just pass the drive letter and add the slashes later.
-	def take_mft_snapshot(self,source_drive,target_path):
+	def take_mft_snapshot(self,drive_letter,target_path):
+		source_drive=rf"\\.\{drive_letter}:"
 		#- Open the file
 		with open(source_drive,'rb') as f:
 			#- We are actually reading the volume boot record. Using the same function to read MFT record for this as well. 
@@ -645,7 +645,8 @@ class ParseMFT:
 
 
 	#- TODO: just pass the drive letter and add the slashes later.
-	def get_mft_record(self,source_drive,mft_record_num):
+	def get_mft_record(self,drive_letter,mft_record_num):
+		source_drive=rf"\\.\{drive_letter}:"
 		if(not isinstance(mft_record_num,int) or mft_record_num<0):
 			print("Invalid MFT record number: ", mft_record_num)
 			exit()
