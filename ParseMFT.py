@@ -266,7 +266,7 @@ class ParseMFT:
 			d['si_mtime'] = self.process_filetime(int.from_bytes(attr_body[8:16],byteorder='little'))
 			d['si_ctime'] = self.process_filetime(int.from_bytes(attr_body[16:24],byteorder='little'))
 			d['si_atime'] = self.process_filetime(int.from_bytes(attr_body[24:32],byteorder='little'))
-			d['si_dos_perms'] = int.from_bytes(attr_body[32:36],byteorder='little')
+			d['si_dos_perms'] = self.get_dos_file_permissions(int.from_bytes(attr_body[32:36],byteorder='little'))
 			d['si_max_versions'] = int.from_bytes(attr_body[36:40],byteorder='little')
 			d['si_version_num'] = int.from_bytes(attr_body[40:44],byteorder='little')
 			d['si_class_id'] = int.from_bytes(attr_body[44:48],byteorder='little')
@@ -344,18 +344,64 @@ class ParseMFT:
 
 	#- This function will convert FILETIME to Unix epoch milliseconds
 	#- TODO: Take the outputformat as an argument. 
-	def process_filetime(self,inp_filetime,out_format="unix_epoch_millis"):
+	def process_filetime(self,inp_filetime,out_format="%d-%b-%Y %H:%M:%S"):
 		#- Number of 100ns between 01-Jan-1601 and 01-Jan-1970. 
 		ns_till_unix_epoch=116444736000000000
+		
+		epoch_hns=(inp_filetime-ns_till_unix_epoch)
+		epoch_ms=epoch_hns/10000
+		epoch_s=epoch_ms//1000
 
-		if(out_format=="unix_epoch_millis"):
-			inp_epoch_ns=(inp_filetime-ns_till_unix_epoch)
-			#- Converting 100nanoseconds to milliseconds
-			out_time=int(inp_epoch_ns/10000)
-		elif(out_format=="unix_epoch_nanos"):
-			out_time=(inp_filetime-ns_till_unix_epoch)
+		out_time=(datetime.fromtimestamp(epoch_s).strftime(out_format))
+		print(out_time)
 
 		return out_time
+		
+		
+	def get_dos_file_permissions(self,inp_val):
+		#- Ref: https://flatcap.org/linux-ntfs/ntfs/attributes/standard_information.html
+		bit_mask=(0x0001|0x0002|0x0004|0x0020|0x0040|0x0080|0x0100|0x0200|0x0400|0x0800|0x1000|0x2000|0x4000)
+		value_array=['Read_Only', 'Hidden', 'System', 'Archive', 'Device', 'Normal', 'Temporary', 'Sparse_File', 'Reparse_Point', 'Compressed', 'Offline', 'Not_Content_Indexed', 'Encrypted']
+
+		perm_bits=bin(inp_val&bit_mask)[2:][:13][::-1]
+		print("State bits: ", perm_bits)
+
+		out_str=''
+		first_value='Y'
+		for idx,value in enumerate(perm_bits):
+			if(value=='1'):
+				if(first_value=='Y'):
+					out_str=value_array[idx]
+					first_value='N'
+				else:
+					out_str=out_str+"|"+value_array[idx]
+					
+		#- TODO: Filename handling. In the FN attribute, none of these permissions are set. Check: https://flatcap.org/linux-ntfs/ntfs/attributes/file_name.html
+
+
+		print(out_str)
+		return(out_str)
+		
+	#- TODO: Check for difference between this and the previous function get_dos_file_permissions (can we use same logic?)
+	def get_attr_header_flags(self,inp_val):
+		#- Compressed, Encrypted, Sparse
+		bit_mask=(0x0001|0x4000|0x8000)
+		#print("Bit mask ", bin(bit_mask))
+
+
+		header_bits=format((inp_val&bit_mask),'016b')
+
+		out_l=[]
+		if header_bits[0]=='1':
+			out_l.append('Sparse')
+		if header_bits[1]=='1':
+			out_l.append('Encrypted')
+		if header_bits[-1]=='1':
+			out_l.append('Compressed')
+			
+		out_str='|'.join(out_l)
+		#print(out_str)
+		return out_str
 
 	def get_fn_from_mft_rec_body(self,mft_body):
 
@@ -411,7 +457,7 @@ class ParseMFT:
 			d['attr_name_len']=int.from_bytes(mft_body[start+9:start+10],byteorder='little')*2
 			d['attr_name_offset']=int.from_bytes(mft_body[start+10:start+12],byteorder='little')
 			#- 0x0001	Compressed,  0x4000	Encrypted, 0x8000	Sparse
-			d['attr_flags']=int.from_bytes(mft_body[start+12:start+14],byteorder='little')
+			d['attr_flags']=self.get_attr_header_flags(int.from_bytes(mft_body[start+12:start+14],byteorder='little'))
 			d['attr_id']=int.from_bytes(mft_body[start+14:start+16],byteorder='little')
 
 			#- Attribute body - setting it as a dictionary
@@ -439,7 +485,12 @@ class ParseMFT:
 				#- Body of the attribute. In case of a non-resident attribute, this will just be a data run. 
 				d['attr_body']={}
 				attr_body=mft_body[start+d['attr_body_offset']:start+attr_len]
+				
+				
 				d['attr_body']['data_runs']=self.parse_data_runs(attr_body)
+				#- But for some strange reason, if this is not a data run (one example I found was, EFS encrypting a 0 byte file)
+				if not d['attr_body']['data_runs']:
+					d['attr_body']['unknown']=attr_body.hex()
 
 
 			#- Handling resident attributes.
@@ -461,7 +512,7 @@ class ParseMFT:
 				d['attr_body']={}
 				d['attr_body']=self.parse_attribute_body(attr_type,attr_body,[d['attr_name']])
 
-				#-rampa
+				#-Adding file name to the MFT header, just makes it easier to search. 
 				if('fn_filename' in d['attr_body']):
 					mft_filename=d['attr_body']['fn_filename']
 
@@ -644,9 +695,12 @@ class ParseMFT:
 		return l
 
 
-	#- TODO: just pass the drive letter and add the slashes later.
+	#- TODO: Handle base file record 
+	#- How do you know if a file has multiple MFT records? Is it the presence of attr_list attribute? 
 	def get_mft_record(self,drive_letter,mft_record_num):
 		source_drive=rf"\\.\{drive_letter}:"
+		
+		print(drive_letter, mft_record_num)
 		if(not isinstance(mft_record_num,int) or mft_record_num<0):
 			print("Invalid MFT record number: ", mft_record_num)
 			exit()
@@ -673,18 +727,10 @@ class ParseMFT:
 					mft_data_run_list=attribs['attr_body']['data_runs']
 					break
 
-			'''
-			#- Auto-generating filename along with timestamp for the snapshot. 
-			now = datetime.now()
-			timestamp=now.strftime('%Y-%m-%d-%H_%M_%S')
-			snapshot_filename=target_path+ "MFT_"+str(timestamp) + ".bin"
-			print(snapshot_filename)
+			seek_offset=(mft_record_num)*self.MFT_RECORD_SIZE
+			#seek_offset=(0 if seek_offset<0 else seek_offset)
 			
-			#- Open snapshot file in binary mode for writing
-			snapshot_file = open(snapshot_filename, "wb")
-			'''
-			seek_offset=(mft_record_num-1)*self.MFT_RECORD_SIZE
-			seek_offset=(0 if seek_offset<0 else seek_offset)
+			print("MFT data runs ", mft_data_run_list)
 
 			mft_record_bytes=b''
 
@@ -693,6 +739,11 @@ class ParseMFT:
 				#- Get the offset and the number of bytes required from that offset. 
 				start_offset=x['dr_offset']*cluster_size
 				data_run_bytes=x['dr_cluster_count']*cluster_size
+				
+				#-printing values for debug:
+				print("Start offset: ", start_offset)
+				print("Seek offset: ", seek_offset)
+				print("Datarun bytes: ", data_run_bytes)
 
 				#- The record we want is not in this data run
 				if seek_offset>data_run_bytes:
@@ -700,7 +751,7 @@ class ParseMFT:
 					continue 
 
 				#- Seek to the offset in the $MFT file. 
-				f.seek(start_offset)
+				f.seek(start_offset+seek_offset)
 
 				#- Read the total number of bytes in the data run. 
 				mft_record_bytes=f.read(self.MFT_RECORD_SIZE)
